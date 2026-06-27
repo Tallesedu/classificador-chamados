@@ -1,10 +1,13 @@
 import json
 import re
+import time
+
+from fastapi import HTTPException, status
+
 from app.services import llm_client
 from app.schemas.chamado import ChamadoInput
 from app.schemas.resposta import AnaliseSentimentoResponse
 from app.core.logging import get_logger
-from app.exceptions.handlers import LLMParsingError
 
 logger = get_logger(__name__)
 
@@ -36,16 +39,21 @@ Responda SOMENTE com este JSON (sem markdown):
 def _parse(raw: str) -> AnaliseSentimentoResponse:
     match = re.search(r"\{.*\}", raw, re.DOTALL)
     if not match:
-        raise LLMParsingError(f"JSON não encontrado na resposta: {raw[:200]}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"JSON não encontrado na resposta da LLM: {raw[:200]}",
+        )
     try:
         data = json.loads(match.group())
         return AnaliseSentimentoResponse(**data)
     except (json.JSONDecodeError, ValueError) as exc:
-        raise LLMParsingError(f"Falha ao parsear resposta da LLM: {exc}") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Falha ao parsear resposta da LLM: {exc}",
+        ) from exc
 
 
 async def analisar(chamado: ChamadoInput) -> AnaliseSentimentoResponse:
-    import time
     start = time.perf_counter()
     raw = await llm_client.chat(_build_prompt(chamado), system=_SYSTEM)
     elapsed = time.perf_counter() - start

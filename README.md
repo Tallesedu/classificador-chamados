@@ -5,6 +5,8 @@ API REST construída com **FastAPI** que utiliza LLM (Ollama local ou Groq API) 
 - **Classificar** chamados de suporte de TI automaticamente (categoria, prioridade, justificativa)
 - **Analisar** o sentimento do chamado e gerar sugestão de resposta para o atendente
 
+A autenticação é feita via **JWT**: o cliente faz `POST /api/v1/auth/login` com usuário e senha e recebe um token Bearer que deve ser enviado nas demais chamadas.
+
 > **Disciplina:** Construção de APIs para Inteligência Artificial — Entrega: 30/06/2026
 
 ---
@@ -41,7 +43,7 @@ pip install -r requirements.txt
 
 # 4. Configure as variáveis de ambiente
 cp .env.example .env
-# Edite .env com seus valores (API_KEY, LLM_PROVIDER, etc.)
+# Edite .env com seus valores (JWT_SECRET, LLM_PROVIDER, etc.)
 ```
 
 ---
@@ -55,7 +57,9 @@ cp .env.example .env
 | `LLM_MODEL` | `llama3.2` | Modelo a ser usado |
 | `LLM_TIMEOUT` | `60` | Timeout em segundos |
 | `GROQ_API_KEY` | — | Chave da Groq API (obrigatória se `LLM_PROVIDER=groq`) |
-| `API_KEY` | — | Chave de autenticação da API (`X-API-Key`) |
+| `JWT_SECRET` | `dev-secret-change-in-production` | Segredo usado para assinar/verificar tokens JWT |
+| `JWT_ALGORITHM` | `HS256` | Algoritmo de assinatura do JWT |
+| `JWT_EXPIRATION_MINUTES` | `60` | Tempo de validade do token (1 a 1440 min) |
 | `APP_ENV` | `development` | Ambiente |
 | `LOG_LEVEL` | `INFO` | Nível de log |
 
@@ -65,7 +69,8 @@ cp .env.example .env
 LLM_PROVIDER=ollama
 LLM_BASE_URL=http://localhost:11434
 LLM_MODEL=llama3.2
-API_KEY=minha-chave-secreta
+JWT_SECRET=troque-em-producao
+JWT_EXPIRATION_MINUTES=60
 ```
 
 ### Groq (nuvem — sem custo no plano gratuito)
@@ -76,10 +81,13 @@ Crie sua chave em [console.groq.com/keys](https://console.groq.com/keys).
 LLM_PROVIDER=groq
 LLM_MODEL=llama-3.3-70b-versatile
 GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxx
-API_KEY=minha-chave-secreta
+JWT_SECRET=troque-em-producao
+JWT_EXPIRATION_MINUTES=60
 ```
 
 Modelos disponíveis na Groq: `llama-3.3-70b-versatile`, `llama3-8b-8192`, `mixtral-8x7b-32768`.
+
+> **Dica:** gere um `JWT_SECRET` forte com `openssl rand -hex 32` ou `python -c "import secrets; print(secrets.token_hex(32))"`.
 
 ---
 
@@ -91,15 +99,77 @@ uvicorn app.main:app --reload
 
 Acesse a documentação interativa em: **http://localhost:8000/docs**
 
+No Swagger, clique em **Authorize**, cole o `access_token` retornado por `/api/v1/auth/login` e pronto — todas as rotas privadas passam a aceitar a autenticação.
+
+---
+
+## Autenticação
+
+A API protege todas as rotas (exceto `/`, `/docs`, `/redoc`, `/openapi.json` e o próprio `/auth/login`) com **JWT Bearer**.
+
+### Usuários mockados
+
+| Usuário | Senha     | Role    |
+|---------|-----------|---------|
+| `admin` | `admin123` | `admin` |
+| `user`  | `user123`  | `user`  |
+
+> Esses usuários ficam **em memória** com senhas hashadas via **bcrypt** — servem apenas para fins didáticos.
+
+### Fluxo
+
+1. Cliente envia credenciais → `POST /api/v1/auth/login`.
+2. API valida e devolve um JWT (`HS256`, claims `sub`, `role`, `iat`, `exp`, `iss`).
+3. Cliente envia o token nas chamadas seguintes em `Authorization: Bearer <token>`.
+4. Middleware decodifica o token, valida assinatura e expiração e libera a request.
+
+### `POST /api/v1/auth/login`
+
+Autentica o usuário e devolve o token de acesso.
+
+**Request:**
+```json
+{
+  "username": "admin",
+  "password": "admin123"
+}
+```
+
+**Response 200:**
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "bearer",
+  "expires_in": 3600
+}
+```
+
+**Erros:**
+- `401` — usuário ou senha inválidos (mensagem genérica para evitar enumeração).
+- `422` — payload inválido (username/senha fora dos limites ou ausentes).
+
+```bash
+curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "admin123"}'
+```
+
+### Validações do payload de login
+
+| Campo | Regras |
+|---|---|
+| `username` | 3–50 chars, apenas `A-Z`, `a-z`, `0-9`, `_`, `.`, `-` |
+| `password` | 6–128 chars |
+
 ---
 
 ## Endpoints
 
+> Todas as rotas abaixo exigem `Authorization: Bearer <token>` obtido em `/api/v1/auth/login`.
+
 ### `POST /api/v1/classificar`
 
 Classifica um chamado de TI.
-
-**Header obrigatório:** `X-API-Key: <sua-chave>`
 
 **Request:**
 ```json
@@ -120,8 +190,12 @@ Classifica um chamado de TI.
 ```
 
 ```bash
+TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin123"}' | jq -r .access_token)
+
 curl -X POST http://localhost:8000/api/v1/classificar \
-  -H "X-API-Key: minha-chave-secreta" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"titulo": "Internet não funciona", "descricao": "Sem acesso desde ontem no setor financeiro."}'
 ```
@@ -131,8 +205,6 @@ curl -X POST http://localhost:8000/api/v1/classificar \
 ### `POST /api/v1/analisar`
 
 Analisa sentimento e gera sugestão de resposta.
-
-**Header obrigatório:** `X-API-Key: <sua-chave>`
 
 **Request:**
 ```json
@@ -155,20 +227,10 @@ Analisa sentimento e gera sugestão de resposta.
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/analisar \
-  -H "X-API-Key: minha-chave-secreta" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"titulo": "Sistema lento demais", "descricao": "O sistema está extremamente lento, não consigo trabalhar."}'
 ```
-
----
-
-## Testes
-
-```bash
-pytest -v
-```
-
-Os testes usam mocks para a LLM — não é necessário ter o Ollama rodando nem a chave Groq configurada.
 
 ---
 
@@ -176,29 +238,28 @@ Os testes usam mocks para a LLM — não é necessário ter o Ollama rodando nem
 
 ```
 app/
-├── main.py                    # FastAPI app, CORS, lifespan
+├── main.py                    # FastAPI app, CORS, lifespan, OpenAPI BearerAuth
 ├── api/v1/
-│   ├── router.py              # Agrupa rotas v1
+│   ├── router.py              # Agrupa rotas v1 (auth, classificar, analisar)
 │   └── routes/
+│       ├── auth.py            # POST /api/v1/auth/login
 │       ├── classificar.py     # POST /api/v1/classificar
 │       └── analisar.py        # POST /api/v1/analisar
 ├── schemas/
+│   ├── auth.py                # LoginRequest, TokenResponse
 │   ├── chamado.py             # Input: ChamadoInput
 │   └── resposta.py            # Output: enums + response models
 ├── services/
+│   ├── auth.py                # Autenticação mockada + bcrypt + JWT
 │   ├── llm_client.py          # Cliente HTTP unificado (Ollama/Groq)
-│   ├── classificador.py       # Prompt + parsing de classificação
+│   ├── classificador.py       # Prompt + normalização + parsing de classificação
 │   └── analisador.py          # Prompt + parsing de sentimento
 ├── core/
 │   ├── config.py              # Settings via pydantic-settings
 │   ├── logging.py             # Logging estruturado
-│   └── security.py            # Middleware X-API-Key
+│   └── security.py            # Middleware JWT Bearer
 └── exceptions/
-    └── handlers.py            # Exception handlers globais
-tests/
-├── conftest.py
-├── test_classificar.py
-└── test_analisar.py
+    └── handlers.py            # Handler global de erros de validação
 ```
 
 ---
@@ -207,7 +268,18 @@ tests/
 
 | Código | Situação |
 |---|---|
-| 401 | API Key ausente ou inválida |
-| 422 | Dados de entrada inválidos (título/descrição) |
+| 401 | Credenciais inválidas no login, token ausente, expirado, com assinatura inválida ou esquema diferente de `Bearer` |
+| 422 | Dados de entrada inválidos (login, título ou descrição fora das regras de validação) |
 | 500 | Falha no parsing da resposta da LLM |
 | 503 | LLM indisponível (Ollama offline, Groq inacessível, timeout) |
+
+---
+
+## Segurança — resumo
+
+- Senhas armazenadas apenas como hash **bcrypt** (12 rounds).
+- Mensagem genérica (`Usuário ou senha inválidos.`) tanto para usuário inexistente quanto para senha errada.
+- Token JWT assinado com **HS256**, contendo `sub`, `role`, `iat`, `exp`, `iss`; validação exige claims obrigatórios.
+- Header `WWW-Authenticate: Bearer` em respostas 401.
+- Rotas públicas explicitamente listadas no middleware (allowlist, não denylist).
+- `JWT_SECRET` parametrizado via `.env` e marcado para troca obrigatória em produção.

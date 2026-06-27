@@ -19,7 +19,6 @@ def setup_logging() -> None:
     root.handlers.clear()
     root.addHandler(handler)
 
-    # silencia logs ruidosos de libs externas
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 

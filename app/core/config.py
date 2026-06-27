@@ -9,19 +9,17 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # LLM
-    llm_provider: str = Field(default="ollama")   # "ollama" ou "groq"
+    llm_provider: str = Field(default="ollama")
     llm_base_url: str = Field(default="http://localhost:11434")
     llm_model: str = Field(default="llama3.2")
     llm_timeout: int = Field(default=60)
 
-    # Groq (usado apenas quando llm_provider="groq")
     groq_api_key: str = Field(default="")
 
-    # Segurança
-    api_key: str = Field(default="dev-key-insecure")
+    jwt_secret: str = Field(default="temp")
+    jwt_algorithm: str = Field(default="HS256")
+    jwt_expiration_minutes: int = Field(default=60, ge=1, le=1440)
 
-    # App
     app_env: str = Field(default="development")
     log_level: str = Field(default="INFO")
 
