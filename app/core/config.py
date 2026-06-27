@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     llm_provider: str = Field(default="ollama")
     llm_base_url: str = Field(default="http://localhost:11434")
-    llm_model: str = Field(default="llama3.2")
+    llm_model: str = Field(default="llama3.1:8b")
     llm_timeout: int = Field(default=60)
 
     groq_api_key: str = Field(default="")
